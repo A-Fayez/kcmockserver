@@ -1,7 +1,6 @@
 use axum::{routing::get, Router};
-use http::Uri;
 use std::net::SocketAddr;
-use std::net::{IpAddr, Ipv4Addr};
+use std::str::FromStr;
 
 pub struct KcTestServer {
     addr: SocketAddr,
@@ -14,11 +13,9 @@ impl KcTestServer {
 
         let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
 
-        // run it with hyper on localhost:3000
-
-        // let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0);
+        let addr = SocketAddr::from_str("0.0.0.0:3000").unwrap();
         let app = Router::new().route("/", get(root));
-        let server = axum::Server::bind(&"127.0.0.1:3000".parse().unwrap())
+        let server = axum::Server::bind(&addr)
             .serve(app.into_make_service())
             .with_graceful_shutdown(async {
                 rx.await.ok();
@@ -27,13 +24,13 @@ impl KcTestServer {
         tokio::spawn(server);
 
         KcTestServer {
-            addr: "127.0.0.1:3000".parse().unwrap(),
+            addr: addr,
             _shutdown: Some(shutdown),
         }
     }
 
     pub fn endpoint(&self) -> reqwest::Url {
-        reqwest::Url::parse("http://0.0.0.0:3000").unwrap()
+        reqwest::Url::parse(&format!("http://{}", self.addr)).unwrap()
     }
 }
 
@@ -58,7 +55,6 @@ mod tests {
         let server = KcTestServer::new();
         println!("{}", server.addr);
         dbg!(server.addr);
-        dbg!(server.endpoint());
         let body = reqwest::get(server.endpoint())
             .await
             .unwrap()
