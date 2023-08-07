@@ -1,11 +1,21 @@
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
+use connectors::Connector;
 use route_handlers::*;
-use std::net::{SocketAddr, TcpListener};
+use std::{
+    collections::HashMap,
+    net::{SocketAddr, TcpListener},
+    sync::{Arc, Mutex},
+};
 
 pub struct KcTestServer {
     addr: SocketAddr,
     _shutdown: Option<tokio::sync::oneshot::Sender<()>>,
 }
+
+type Connectors = Arc<Mutex<HashMap<String, Connector>>>;
 
 impl KcTestServer {
     pub async fn new() -> Self {
@@ -15,7 +25,10 @@ impl KcTestServer {
         let addr = listener.local_addr().unwrap();
         let app = Router::new()
             .route("/", get(root))
-            .route("/slash", get(slash));
+            .route("/connectors", post(create_connector))
+            .with_state(Connectors::new(Mutex::new(
+                HashMap::<String, Connector>::new(),
+            )));
 
         let server = axum::Server::from_tcp(listener)
             .unwrap()
@@ -46,12 +59,16 @@ impl Drop for KcTestServer {
 }
 
 mod route_handlers {
+
+    use crate::connectors::*;
+    use axum::extract::Json;
+
     pub async fn root() -> &'static str {
         "Hello, World!"
     }
 
-    pub async fn slash() -> &'static str {
-        "Hello Slash"
+    pub async fn create_connector(Json(payload): Json<CreateConnector>) -> Json<Connector> {
+        Json(Connector::from(&payload))
     }
 }
 
@@ -62,7 +79,7 @@ mod connectors {
 
     type ConnectorConfig = HashMap<String, String>;
 
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
     pub struct ConnectorName(pub String);
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -93,6 +110,28 @@ mod connectors {
         SINK,
         SOURCE,
     }
+
+    impl From<&CreateConnector> for Connector {
+        fn from(connector: &CreateConnector) -> Self {
+            let mut tasks = Vec::<Task>::new();
+            let c_type = if connector.name.0.to_lowercase().contains("sink") {
+                ConnectorType::SINK
+            } else {
+                ConnectorType::SOURCE
+            };
+
+            tasks.push(Task {
+                connector: (connector.name.clone()),
+                id: (0),
+            });
+            Connector {
+                name: (connector.name.clone()),
+                config: (connector.config.clone()),
+                tasks: (tasks),
+                connector_type: (c_type),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -112,15 +151,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body, "Hello, World!");
-    }
-
-    #[tokio::test]
-    async fn it_works_slash() {
-        let server = KcTestServer::new().await;
-        let endpoint = server.uri(Some("/slash"));
-        dbg!(server.addr);
-        let body = reqwest::get(endpoint).await.unwrap().text().await.unwrap();
-        assert_eq!(body, "Hello Slash");
     }
 
     #[test]
@@ -163,5 +193,28 @@ mod tests {
         let c: Connector = serde_json::from_str(c).unwrap();
         assert_eq!(c.connector_type, ConnectorType::SINK);
         dbg!(c);
+    }
+
+    #[tokio::test]
+    async fn test_creating_a_connector() {
+        let c_connector = r#"
+        {
+            "name": "test",
+            "config": {
+                "tasks.max": "10",
+                "connector.class": "com.example.kafka",
+                "name": "test"
+            }
+        }"#;
+
+        let c: CreateConnector = serde_json::from_str(c_connector).unwrap();
+        let returned_connector = Connector::from(&c);
+
+        let server = KcTestServer::new().await;
+        let endpoint = server.uri(Some("/connectors"));
+        let client = reqwest::Client::new();
+        let body = client.post(endpoint).json(&c).send().await;
+        let returned_response = body.unwrap().json::<Connector>().await;
+        assert_eq!(returned_connector, returned_response.unwrap());
     }
 }
