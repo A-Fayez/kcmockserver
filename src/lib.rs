@@ -24,7 +24,7 @@ impl KcTestServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let app = Router::new()
-            .route("/", get(root))
+            .route("/connectors", get(list_connectors))
             .route("/connectors", post(create_connector))
             .with_state(Connectors::new(Mutex::new(
                 HashMap::<String, Connector>::new(),
@@ -61,14 +61,30 @@ impl Drop for KcTestServer {
 mod route_handlers {
 
     use crate::connectors::*;
-    use axum::extract::Json;
+    use crate::Connectors;
+    use axum::extract::{Json, State};
 
-    pub async fn root() -> &'static str {
-        "Hello, World!"
+    pub async fn create_connector(
+        State(state): State<Connectors>,
+        Json(payload): Json<CreateConnector>,
+    ) -> Json<Connector> {
+        let connector = Connector::from(&payload);
+        state
+            .lock()
+            .unwrap()
+            .insert(connector.name.clone().0, connector);
+
+        Json(Connector::from(&payload))
     }
 
-    pub async fn create_connector(Json(payload): Json<CreateConnector>) -> Json<Connector> {
-        Json(Connector::from(&payload))
+    pub async fn list_connectors(State(state): State<Connectors>) -> Json<Vec<ConnectorName>> {
+        let connectors = state
+            .lock()
+            .unwrap()
+            .keys()
+            .map(|c| ConnectorName(c.to_string()))
+            .collect::<Vec<ConnectorName>>();
+        Json(connectors)
     }
 }
 
@@ -139,20 +155,6 @@ mod tests {
     use super::*;
     use crate::connectors::*;
 
-    #[tokio::test]
-    async fn it_works() {
-        let server = KcTestServer::new().await;
-        println!("{}", server.addr);
-        dbg!(server.addr);
-        let body = reqwest::get(server.uri(Some("/")))
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert_eq!(body, "Hello, World!");
-    }
-
     #[test]
     fn test_create_connector_deserialization_and_serialization() {
         // test deserialization
@@ -192,7 +194,6 @@ mod tests {
 
         let c: Connector = serde_json::from_str(c).unwrap();
         assert_eq!(c.connector_type, ConnectorType::SINK);
-        dbg!(c);
     }
 
     #[tokio::test]
@@ -216,5 +217,38 @@ mod tests {
         let body = client.post(endpoint).json(&c).send().await;
         let returned_response = body.unwrap().json::<Connector>().await;
         assert_eq!(returned_connector, returned_response.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_listing_multiple_connectors() {
+        let c_connector = r#"
+        {
+            "name": "sink-connector",
+            "config": {
+                "tasks.max": "10",
+                "connector.class": "com.example.kafka",
+                "name": "sink-connector"
+            }
+        }"#;
+        let s_connector = r#"
+        {
+            "name": "source-connector",
+            "config": {
+                "tasks.max": "10",
+                "connector.class": "com.example",
+                "name": "source-connector"
+            }
+        }"#;
+        let c: CreateConnector = serde_json::from_str(c_connector).unwrap();
+        let s: CreateConnector = serde_json::from_str(s_connector).unwrap();
+
+        let server = KcTestServer::new().await;
+        let endpoint = server.uri(Some("/connectors"));
+        let client = reqwest::Client::new();
+        client.post(endpoint.clone()).json(&c).send().await.unwrap();
+        client.post(endpoint.clone()).json(&s).send().await.unwrap();
+
+        let response = reqwest::get(endpoint).await.unwrap().text().await.unwrap();
+        dbg!(response);
     }
 }
