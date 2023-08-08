@@ -42,7 +42,7 @@ impl KcTestServer {
         tokio::spawn(server);
 
         KcTestServer {
-            addr: addr,
+            addr,
             _shutdown: Some(shutdown),
         }
     }
@@ -126,17 +126,17 @@ mod connectors {
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
     #[serde(rename_all = "lowercase")]
     pub enum ConnectorType {
-        SINK,
-        SOURCE,
+        Sink,
+        Source,
     }
 
     impl From<&CreateConnector> for Connector {
         fn from(connector: &CreateConnector) -> Self {
             let mut tasks = Vec::<Task>::new();
             let c_type = if connector.name.0.to_lowercase().contains("sink") {
-                ConnectorType::SINK
+                ConnectorType::Sink
             } else {
-                ConnectorType::SOURCE
+                ConnectorType::Source
             };
 
             tasks.push(Task {
@@ -196,7 +196,7 @@ mod tests {
         }"#;
 
         let c: Connector = serde_json::from_str(c).unwrap();
-        assert_eq!(c.connector_type, ConnectorType::SINK);
+        assert_eq!(c.connector_type, ConnectorType::Sink);
     }
 
     #[tokio::test]
