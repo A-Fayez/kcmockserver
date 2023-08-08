@@ -29,6 +29,7 @@ jobs:
           command: test
   
   build:
+    needs: test
     name: build
     runs-on: ubuntu-latest
     steps:
