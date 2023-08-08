@@ -3,10 +3,12 @@ use axum::{
     Router,
 };
 use connectors::Connector;
+use http::Uri;
 use route_handlers::*;
 use std::{
     collections::HashMap,
     net::{SocketAddr, TcpListener},
+    str::FromStr,
     sync::{Arc, Mutex},
 };
 
@@ -45,8 +47,9 @@ impl KcTestServer {
         }
     }
 
-    pub fn uri(&self, endpoint: Option<&str>) -> reqwest::Url {
-        reqwest::Url::parse(&format!("http://{}{}", self.addr, endpoint.unwrap_or("/"))).unwrap()
+    pub fn base_url(&self) -> Uri {
+        // reqwest::Url::parse(&format!("http://{}{}", self.addr, endpoint.unwrap_or("/"))).unwrap()
+        Uri::from_str(&format!("http://{}", &self.addr.to_string())).unwrap()
     }
 }
 
@@ -212,15 +215,19 @@ mod tests {
         let returned_connector = Connector::from(&c);
 
         let server = KcTestServer::new().await;
-        let endpoint = server.uri(Some("/connectors"));
+        let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
+        let reqwest_uri = reqwest::Url::from_str(&endpoint).unwrap();
+        dbg!(&reqwest_uri);
+        dbg!(server.base_url());
+        dbg!(&endpoint);
         let client = reqwest::Client::new();
-        let body = client.post(endpoint).json(&c).send().await;
+        let body = client.post(reqwest_uri).json(&c).send().await;
         let returned_response = body.unwrap().json::<Connector>().await;
         assert_eq!(returned_connector, returned_response.unwrap());
     }
 
     #[tokio::test]
-    async fn test_listing_multiple_connectors() {
+    async fn test_listing_connectors() {
         let c_connector = r#"
         {
             "name": "sink-connector",
@@ -230,25 +237,34 @@ mod tests {
                 "name": "sink-connector"
             }
         }"#;
-        let s_connector = r#"
-        {
-            "name": "source-connector",
-            "config": {
-                "tasks.max": "10",
-                "connector.class": "com.example",
-                "name": "source-connector"
-            }
-        }"#;
         let c: CreateConnector = serde_json::from_str(c_connector).unwrap();
-        let s: CreateConnector = serde_json::from_str(s_connector).unwrap();
 
         let server = KcTestServer::new().await;
-        let endpoint = server.uri(Some("/connectors"));
+        let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
+        let reqwest_uri = reqwest::Url::from_str(&endpoint).unwrap();
         let client = reqwest::Client::new();
-        client.post(endpoint.clone()).json(&c).send().await.unwrap();
-        client.post(endpoint.clone()).json(&s).send().await.unwrap();
+        client
+            .post(reqwest_uri.clone())
+            .json(&c)
+            .send()
+            .await
+            .unwrap();
 
         let response = reqwest::get(endpoint).await.unwrap().text().await.unwrap();
-        dbg!(response);
+        assert_eq!(response, "[\"sink-connector\"]");
+    }
+
+    #[tokio::test]
+    async fn test_listing_empty_connectors() {
+        let server = KcTestServer::new().await;
+        let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
+        let reqwest_uri = reqwest::Url::from_str(&endpoint).unwrap();
+        let response = reqwest::get(reqwest_uri)
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(response, "[]");
     }
 }
