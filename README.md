@@ -1,4 +1,4 @@
-# KcTestServer
+# KcMockServer
 
 An in-memory rust implementation of Kafka Connect compatible REST API designed for testing.
 
