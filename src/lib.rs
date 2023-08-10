@@ -20,7 +20,7 @@ pub struct KcTestServer {
 type Connectors = Arc<Mutex<HashMap<String, Connector>>>;
 
 impl KcTestServer {
-    pub async fn new() -> Self {
+    pub fn new() -> Self {
         let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -214,7 +214,7 @@ mod tests {
         let c: CreateConnector = serde_json::from_str(c_connector).unwrap();
         let returned_connector = Connector::from(&c);
 
-        let server = KcTestServer::new().await;
+        let server = KcTestServer::new();
         let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
         let reqwest_uri = reqwest::Url::from_str(&endpoint).unwrap();
         dbg!(&reqwest_uri);
@@ -239,7 +239,7 @@ mod tests {
         }"#;
         let c: CreateConnector = serde_json::from_str(c_connector).unwrap();
 
-        let server = KcTestServer::new().await;
+        let server = KcTestServer::new();
         let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
         let reqwest_uri = reqwest::Url::from_str(&endpoint).unwrap();
         let client = reqwest::Client::new();
@@ -256,7 +256,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_listing_empty_connectors() {
-        let server = KcTestServer::new().await;
+        let server = KcTestServer::new();
         let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
         let reqwest_uri = reqwest::Url::from_str(&endpoint).unwrap();
         let response = reqwest::get(reqwest_uri)
