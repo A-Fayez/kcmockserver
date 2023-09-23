@@ -1,16 +1,18 @@
-use axum::{
-    routing::{get, post},
-    Router,
-};
-use connectors::Connector;
-use http::Uri;
-use route_handlers::*;
 use std::{
     collections::HashMap,
     net::{SocketAddr, TcpListener},
     str::FromStr,
     sync::{Arc, Mutex},
 };
+
+use axum::{
+    routing::{get, post},
+    Router,
+};
+use http::Uri;
+
+use connectors::Connector;
+use route_handlers::*;
 
 pub struct KcTestServer {
     addr: SocketAddr,
@@ -48,7 +50,6 @@ impl KcTestServer {
     }
 
     pub fn base_url(&self) -> Uri {
-        // reqwest::Url::parse(&format!("http://{}{}", self.addr, endpoint.unwrap_or("/"))).unwrap()
         Uri::from_str(&format!("http://{}", &self.addr.to_string())).unwrap()
     }
 }
@@ -63,9 +64,12 @@ impl Drop for KcTestServer {
 
 mod route_handlers {
 
+    use axum::extract::{Json, Query, State};
+    use axum::response::{IntoResponse, Response};
+    use serde::Deserialize;
+
     use crate::connectors::*;
     use crate::Connectors;
-    use axum::extract::{Json, State};
 
     pub async fn create_connector(
         State(state): State<Connectors>,
@@ -80,14 +84,47 @@ mod route_handlers {
         Json(Connector::from(&payload))
     }
 
-    pub async fn list_connectors(State(state): State<Connectors>) -> Json<Vec<ConnectorName>> {
+    pub async fn list_connectors(
+        State(state): State<Connectors>,
+        Query(params): Query<Params>,
+    ) -> Response {
+        let mut verbose_connectors = VerboseConnectors::new();
+        match params.expand {
+            Some(ExpandValue::Status) => state.lock().unwrap().iter().for_each(|c| {
+                verbose_connectors.insert(
+                    c.0.to_string(),
+                    Status {
+                        status: ConnectorStatus::from(c.1),
+                    },
+                );
+            }),
+            Some(ExpandValue::Info) => unimplemented!(),
+            None => (),
+        }
+
+        if verbose_connectors.len() != 0 {
+            return Json(verbose_connectors).into_response();
+        }
+
         let connectors = state
             .lock()
             .unwrap()
             .keys()
             .map(|c| ConnectorName(c.to_string()))
             .collect::<Vec<ConnectorName>>();
-        Json(connectors)
+        Json(connectors).into_response()
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct Params {
+        pub expand: Option<ExpandValue>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    pub enum ExpandValue {
+        Status,
+        Info,
     }
 }
 
@@ -98,7 +135,9 @@ mod connectors {
 
     type ConnectorConfig = HashMap<String, String>;
 
-    #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+    pub type VerboseConnectors = HashMap<String, Status>;
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Eq, Hash)]
     pub struct ConnectorName(pub String);
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -130,9 +169,45 @@ mod connectors {
         Source,
     }
 
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    pub struct Status {
+        pub status: ConnectorStatus,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    pub struct ConnectorStatus {
+        pub name: ConnectorName,
+        pub connector: ConnectorState,
+        pub tasks: Vec<VerboseTask>,
+        #[serde(rename = "type")]
+        pub connector_type: ConnectorType,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    pub struct ConnectorState {
+        pub state: State,
+        pub worker_id: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    pub struct VerboseTask {
+        pub id: usize,
+        pub state: State,
+        pub worker_id: String,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    #[serde(rename_all = "UPPERCASE")]
+    pub enum State {
+        Running,
+        Failed,
+        Unassigned,
+        Paused,
+    }
     impl From<&CreateConnector> for Connector {
         fn from(connector: &CreateConnector) -> Self {
             let mut tasks = Vec::<Task>::new();
+            // fix this should check connector.class and not connector name
             let c_type = if connector.name.0.to_lowercase().contains("sink") {
                 ConnectorType::Sink
             } else {
@@ -148,6 +223,26 @@ mod connectors {
                 config: (connector.config.clone()),
                 tasks: (tasks),
                 connector_type: (c_type),
+            }
+        }
+    }
+
+    impl From<&Connector> for ConnectorStatus {
+        fn from(connector: &Connector) -> Self {
+            let connector_name = connector.name.clone();
+            let tasks = vec![VerboseTask {
+                id: 0,
+                state: State::Running,
+                worker_id: String::from("127.0.1.1:8083"),
+            }];
+            Self {
+                name: connector_name,
+                connector: ConnectorState {
+                    state: (State::Running),
+                    worker_id: (String::from("127.0.1.1:8083")),
+                },
+                tasks,
+                connector_type: ConnectorType::Source,
             }
         }
     }
@@ -217,9 +312,6 @@ mod tests {
         let server = KcTestServer::new();
         let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
         let reqwest_uri = reqwest::Url::from_str(&endpoint).unwrap();
-        dbg!(&reqwest_uri);
-        dbg!(server.base_url());
-        dbg!(&endpoint);
         let client = reqwest::Client::new();
         let body = client.post(reqwest_uri).json(&c).send().await;
         let returned_response = body.unwrap().json::<Connector>().await;
@@ -266,5 +358,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response, "[]");
+    }
+
+    #[tokio::test]
+    async fn test_listing_connectors_with_expand_status_query_parameter() {
+        let server = KcTestServer::new();
+
+        // first create some test connectors
+        let c_connector = r#"
+        {
+            "name": "test",
+            "config": {
+                "tasks.max": "10",
+                "connector.class": "com.example.kafka",
+                "name": "test"
+            }
+        }"#;
+        let c: CreateConnector = serde_json::from_str(c_connector).unwrap();
+        let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
+
+        let client = reqwest::Client::new();
+        client.post(endpoint.clone()).json(&c).send().await.unwrap();
+
+        let c_connector = r#"
+        {
+            "name": "dev",
+            "config": {
+                "tasks.max": "3",
+                "connector.class": "com.example.mongo",
+                "name": "dev"
+            }
+        }"#;
+        let c: CreateConnector = serde_json::from_str(c_connector).unwrap();
+        let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
+
+        let client = reqwest::Client::new();
+        client.post(endpoint.clone()).json(&c).send().await.unwrap();
+
+        // query with params
+        let params = [("expand", "status")];
+        let endpoint_with_params = reqwest::Url::parse_with_params(&endpoint, &params).unwrap();
+        let response: serde_json::Map<String, serde_json::Value> =
+            reqwest::get(endpoint_with_params)
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+        // let response = serde_json::to_string_pretty(&response).unwrap();
+        // println!("{}", response);
+        assert!(response.contains_key("dev"));
+        assert!(response.contains_key("test"));
+        let status = response.get("dev").unwrap().get("status").unwrap();
+        assert_eq!(status.get("name").unwrap(), &serde_json::Value::from("dev"));
+        assert_eq!(
+            status.get("connector").unwrap().get("state").unwrap(),
+            "RUNNING"
+        );
+
+        let status = response.get("test").unwrap().get("status").unwrap();
+        assert_eq!(
+            status.get("name").unwrap(),
+            &serde_json::Value::from("test")
+        );
+        assert_eq!(
+            status.get("connector").unwrap().get("state").unwrap(),
+            "RUNNING"
+        );
     }
 }
