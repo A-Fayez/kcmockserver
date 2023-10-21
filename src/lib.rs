@@ -23,35 +23,31 @@ type Connectors = Arc<Mutex<HashMap<String, Connector>>>;
 
 impl KcTestServer {
     pub fn new() -> Self {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route("/connectors", get(list_connectors))
+            .route("/connectors", post(create_connector))
+            .with_state(Connectors::new(Mutex::new(
+                HashMap::<String, Connector>::new(),
+            )));
 
         std::thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
             runtime.block_on(async {
-                let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
-
-                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-                let addr = listener.local_addr().unwrap();
-                let app = Router::new()
-                    .route("/connectors", get(list_connectors))
-                    .route("/connectors", post(create_connector))
-                    .with_state(Connectors::new(Mutex::new(
-                        HashMap::<String, Connector>::new(),
-                    )));
-
-                let server = axum::Server::from_tcp(listener)
+                axum::Server::from_tcp(listener)
                     .unwrap()
                     .serve(app.into_make_service())
                     .with_graceful_shutdown(async {
                         rx.await.ok();
-                    });
-                
-                tokio::spawn(server);
-                tx.send((addr, shutdown)).unwrap();
-            });
+                    })
+                    .await
+                    .unwrap();
+            })
         });
 
-        let (addr, shutdown) = rx.recv().unwrap();
         KcTestServer {
             addr,
             _shutdown: Some(shutdown),
@@ -359,6 +355,8 @@ mod tests {
     #[test]
     fn test_listing_empty_connectors() {
         let server = KcTestServer::new();
+        dbg!(server.addr);
+        // std::thread::sleep(Duration::from_secs(10));
         let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
         let reqwest_uri = reqwest::Url::from_str(&endpoint).unwrap();
         let response = reqwest::blocking::get(reqwest_uri).unwrap().text().unwrap();
