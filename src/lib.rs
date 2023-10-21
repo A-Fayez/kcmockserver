@@ -23,6 +23,7 @@ type Connectors = Arc<Mutex<HashMap<String, Connector>>>;
 
 impl KcTestServer {
     pub fn new() -> Self {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
         let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -34,14 +35,18 @@ impl KcTestServer {
                 HashMap::<String, Connector>::new(),
             )));
 
-        let server = axum::Server::from_tcp(listener)
-            .unwrap()
-            .serve(app.into_make_service())
-            .with_graceful_shutdown(async {
-                rx.await.ok();
-            });
-
-        tokio::spawn(server);
+        std::thread::spawn(move || {
+            runtime.block_on(async {
+                axum::Server::from_tcp(listener)
+                    .unwrap()
+                    .serve(app.into_make_service())
+                    .with_graceful_shutdown(async {
+                        rx.await.ok();
+                    })
+                    .await
+                    .unwrap();
+            })
+        });
 
         KcTestServer {
             addr,
@@ -346,17 +351,15 @@ mod tests {
         assert_eq!(response, "[\"sink-connector\"]");
     }
 
-    #[tokio::test]
-    async fn test_listing_empty_connectors() {
+    // #[tokio::test]
+    #[test]
+    fn test_listing_empty_connectors() {
         let server = KcTestServer::new();
+        dbg!(server.addr);
+        // std::thread::sleep(Duration::from_secs(10));
         let endpoint = format!("{}{}", server.base_url().to_string(), "connectors");
         let reqwest_uri = reqwest::Url::from_str(&endpoint).unwrap();
-        let response = reqwest::get(reqwest_uri)
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
+        let response = reqwest::blocking::get(reqwest_uri).unwrap().text().unwrap();
         assert_eq!(response, "[]");
     }
 
