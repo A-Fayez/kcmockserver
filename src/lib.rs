@@ -29,6 +29,7 @@ impl KcTestServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let app = Router::new()
+            .route("/", get(server_status))
             .route("/connectors", get(list_connectors))
             .route("/connectors", post(create_connector))
             .with_state(Connectors::new(Mutex::new(
@@ -72,9 +73,18 @@ mod route_handlers {
     use axum::extract::{Json, Query, State};
     use axum::response::{IntoResponse, Response};
     use serde::Deserialize;
+    use serde_json::json;
 
     use crate::connectors::*;
     use crate::Connectors;
+
+    pub async fn server_status() -> Json<serde_json::Value> {
+        Json(json!({
+            "version": "3.0.0",
+            "commit": uuid::Uuid::new_v4().to_string(),
+            "kafka_cluster_id": uuid::Uuid::new_v4().to_string(),
+        }))
+    }
 
     pub async fn create_connector(
         State(state): State<Connectors>,
